@@ -50,6 +50,15 @@ pub fn findMatch(query: []const u8, candidate: []const u8, positions: []usize) M
         }
     }
 
+    var idx: isize = @intCast(positions[positions.len - 1]);
+    var pos_idx = positions.len - 1;
+    while (positionsIter(idx)) |i| : (idx -= 1) {
+        if (i > 0 and areCharsEqualCaseInsensitive(candidate[i], candidate[positions[pos_idx]])) {
+            positions[pos_idx] = i;
+            pos_idx -= 1;
+        }
+    }
+
     if (query_idx == query.len) {
         // Challenge 8: tighten the window, then rebuild greedy positions before scoring.
         var prev_p: ?usize = null;
@@ -82,6 +91,10 @@ pub fn findMatch(query: []const u8, candidate: []const u8, positions: []usize) M
     }
 
     return null;
+}
+
+fn positionsIter(idx: isize) ?usize {
+    return if (idx < 0) null else @intCast(idx);
 }
 
 fn areCharsEqualCaseInsensitive(a: u8, b: u8) bool {
@@ -281,4 +294,9 @@ test "gap extension penalty is smaller than gap start penalty" {
     const actual = maybe_actual.?;
 
     try std.testing.expectEqual(@as(i32, 35), actual.score);
+}
+
+test "backwards for loop" {
+    var positions: [3]usize = undefined;
+    _ = try findMatch("abc", "axabxccx", &positions);
 }
