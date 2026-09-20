@@ -16,16 +16,15 @@ pub const ParseArgsError = error{
 
 /// Parses either `<query>` or `--limit <count> <query>`.
 pub fn parseArgs(args: []const []const u8) ParseArgsError!Options {
-    // Challenge 7: add --limit parsing.
     if (args.len < 1) return error.InvalidArguments;
 
     if (args.len == 1) return .{ .query = args[0], .limit = null };
 
-    if (std.mem.eql(u8, args[0], "--limit")) {
-        if (args.len >= 3) {
+    if (args.len == 3) {
+        if (std.mem.eql(u8, args[0], "--limit")) {
             const limit = try parseLimit(args[1]);
             return .{ .query = args[2], .limit = limit };
-        } else return error.InvalidArguments;
+        }
     }
 
     return error.InvalidArguments;
@@ -153,6 +152,10 @@ test "rejects a missing limit value" {
     try std.testing.expectError(error.InvalidArguments, parseArgs(&.{ "--limit", "abc" }));
 }
 
+test "rejects extra arguments after a limited query" {
+    try std.testing.expectError(error.InvalidArguments, parseArgs(&.{ "--limit", "2", "abc", "extra" }));
+}
+
 test "rejects a non-decimal limit" {
     try std.testing.expectError(error.InvalidLimit, parseArgs(&.{ "--limit", "two", "abc" }));
 }
@@ -168,5 +171,5 @@ test "run applies the result limit" {
 
     try run(std.testing.allocator, "abc", 2, &input, &output.writer);
 
-    try std.testing.expectEqualStrings("abc\naXbYc\n", output.written());
+    try std.testing.expectEqualStrings("abc\na---b---c\n", output.written());
 }

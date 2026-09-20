@@ -29,8 +29,8 @@ pub const MatchError = error{
     PositionBufferTooSmall,
 };
 
-/// Finds the first greedy alignment and writes its candidate indexes to
-/// `positions`. `end` is exclusive, as it is in a Zig slice.
+/// Writes matching candidate indexes to `positions` and returns bounds and score.
+/// `end` is exclusive, as it is in a Zig slice.
 pub fn findMatch(query: []const u8, candidate: []const u8, positions: []usize) MatchError!?Match {
     if (positions.len < query.len) return error.PositionBufferTooSmall;
 
@@ -51,6 +51,7 @@ pub fn findMatch(query: []const u8, candidate: []const u8, positions: []usize) M
     }
 
     if (query_idx == query.len) {
+        // Challenge 8: tighten the window, then rebuild greedy positions before scoring.
         var prev_p: ?usize = null;
         for (positions[0..query.len]) |p| {
             match.score += 16;
@@ -153,12 +154,84 @@ test "scored matching ignores ASCII case" {
     try std.testing.expectEqual(@as(i32, 64), actual.score);
 }
 
-test "greedy matching uses the first valid alignment" {
+test "refinement tightens the first completed alignment" {
     var positions: [2]usize = undefined;
     const maybe_actual = try findMatch("ab", "a---ab", &positions);
     try std.testing.expect(maybe_actual != null);
+    const actual = maybe_actual.?;
 
-    try std.testing.expectEqualSlices(usize, &.{ 0, 5 }, &positions);
+    try std.testing.expectEqualSlices(usize, &.{ 4, 5 }, &positions);
+    try std.testing.expectEqual(@as(usize, 4), actual.start);
+    try std.testing.expectEqual(@as(usize, 6), actual.end);
+    try std.testing.expectEqual(@as(i32, 44), actual.score);
+}
+
+test "refinement keeps the first completion despite a tighter later occurrence" {
+    var positions: [2]usize = undefined;
+    const maybe_actual = try findMatch("ab", "aXXb ab", &positions);
+    try std.testing.expect(maybe_actual != null);
+    const actual = maybe_actual.?;
+
+    try std.testing.expectEqualSlices(usize, &.{ 0, 3 }, &positions);
+    try std.testing.expectEqual(@as(usize, 0), actual.start);
+    try std.testing.expectEqual(@as(usize, 4), actual.end);
+    try std.testing.expectEqual(@as(i32, 36), actual.score);
+}
+
+test "refinement rebuilds greedy interior positions within the tightened window" {
+    var positions: [3]usize = undefined;
+    const maybe_actual = try findMatch("abc", "a-abXbYc", &positions);
+    try std.testing.expect(maybe_actual != null);
+    const actual = maybe_actual.?;
+
+    try std.testing.expectEqualSlices(usize, &.{ 2, 3, 7 }, &positions);
+    try std.testing.expectEqual(@as(usize, 2), actual.start);
+    try std.testing.expectEqual(@as(usize, 8), actual.end);
+    try std.testing.expectEqual(@as(i32, 55), actual.score);
+}
+
+test "refinement uses ASCII case-insensitive comparison" {
+    var positions: [2]usize = undefined;
+    const maybe_actual = try findMatch("AB", "a---Ab", &positions);
+    try std.testing.expect(maybe_actual != null);
+    const actual = maybe_actual.?;
+
+    try std.testing.expectEqualSlices(usize, &.{ 4, 5 }, &positions);
+    try std.testing.expectEqual(@as(usize, 4), actual.start);
+    try std.testing.expectEqual(@as(usize, 6), actual.end);
+    try std.testing.expectEqual(@as(i32, 44), actual.score);
+}
+
+test "refinement uses distinct positions for repeated query bytes" {
+    var positions: [3]usize = undefined;
+    const maybe_actual = try findMatch("aab", "aXaaab", &positions);
+    try std.testing.expect(maybe_actual != null);
+    const actual = maybe_actual.?;
+
+    try std.testing.expectEqualSlices(usize, &.{ 3, 4, 5 }, &positions);
+    try std.testing.expectEqual(@as(usize, 3), actual.start);
+    try std.testing.expectEqual(@as(usize, 6), actual.end);
+    try std.testing.expectEqual(@as(i32, 56), actual.score);
+}
+
+test "single-byte refinement keeps the first occurrence" {
+    var positions: [1]usize = undefined;
+    const maybe_actual = try findMatch("a", "x a a", &positions);
+    try std.testing.expect(maybe_actual != null);
+    const actual = maybe_actual.?;
+
+    try std.testing.expectEqualSlices(usize, &.{2}, &positions);
+    try std.testing.expectEqual(@as(usize, 2), actual.start);
+    try std.testing.expectEqual(@as(usize, 3), actual.end);
+    try std.testing.expectEqual(@as(i32, 24), actual.score);
+}
+
+test "refinement leaves extra positions buffer entries untouched" {
+    var positions: [4]usize = @splat(99);
+    const maybe_actual = try findMatch("ab", "a---ab", &positions);
+    try std.testing.expect(maybe_actual != null);
+
+    try std.testing.expectEqualSlices(usize, &.{ 4, 5, 99, 99 }, &positions);
 }
 
 test "non-matching query returns null" {

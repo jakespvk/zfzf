@@ -96,6 +96,17 @@ test "combined match starts at the earliest term" {
     try std.testing.expectEqual(@as(usize, 15), actual.end);
 }
 
+test "combined match uses refined term bounds and scores" {
+    var positions: [5]usize = undefined;
+    const maybe_actual = try findMatch("ab xy", "x---xy a---ab", &positions);
+    try std.testing.expect(maybe_actual != null);
+    const actual = maybe_actual.?;
+
+    try std.testing.expectEqual(@as(usize, 4), actual.start);
+    try std.testing.expectEqual(@as(usize, 13), actual.end);
+    try std.testing.expectEqual(@as(i32, 88), actual.score);
+}
+
 test "whitespace-only query produces an empty match" {
     var positions: [4]usize = undefined;
     const maybe_actual = try findMatch(" \t\r\n", "anything", &positions);

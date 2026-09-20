@@ -6,6 +6,17 @@ core and eventually growing into an interactive Windows terminal program.
 The project requires Zig `0.17.0-dev.1857+3c46da14d` or newer. This is a
 nightly compiler series, so later nightlies may require small API updates.
 
+## Learning Workflow
+
+You write the implementation. The assistant maintains the challenge instructions
+and tests, gives focused hints when asked, and reviews your work. It should not
+complete the exercise for you. After a successful review, it prepares the next
+challenge.
+
+Existing behavior remains the reference unless the current challenge explicitly
+changes it. Tests must follow those requirements and the established scoring
+rules.
+
 ## Progress
 
 - [x] Challenge 1: ordered subsequence matching
@@ -14,88 +25,114 @@ nightly compiler series, so later nightlies may require small API updates.
 - [x] Challenge 4: unordered query terms
 - [x] Challenge 5: ASCII case-insensitive matching
 - [x] Challenge 6: non-interactive stdin/stdout CLI
-- [ ] Challenge 7: bounded results and `--limit`
+- [x] Challenge 7: bounded results and `--limit`
+- [ ] Challenge 8: forward/backward match refinement
 
-## Challenge 7: Bounded Results and `--limit`
+## Challenge 8: Forward/Backward Match Refinement
 
-Implement `filterCandidatesLimit` in `src/filter.zig` and complete `parseArgs`
-in `src/cli.zig`.
+Improve `findMatch` in `src/matcher.zig` by tightening the match window before
+scoring it.
 
-Users often need only the best few matches. Add this invocation:
+Your forward scan currently finds query `ab` in candidate `a---ab` at positions
+`[0, 5]`. The same match can end at position 5 while starting at position 4,
+giving the tighter alignment `[4, 5]`.
 
-```text
-zfzf --limit 10 query
-```
+This challenge explicitly changes **alignment selection**. Keep the existing
+scoring formula and candidate ranking rules from the earlier challenges.
 
-The easy implementation would filter and sort every match, then truncate the
-result. Do not do that: when the limit is small, retain only the best `limit`
-matches while scanning candidates.
+### Alignment Rules
 
-Keep the existing `filterCandidates` API unchanged for unlimited callers.
-`cli.run` already chooses the bounded API only when `--limit` is supplied.
+For a non-empty query that matches:
 
-### Ranking Heap
+1. Scan forward greedily to find the **first completed match**. Keep that match's
+   exclusive end index fixed.
+2. Starting at that end, match the query backwards to find the **latest possible
+   start** for a match ending there.
+3. Scan forward greedily again inside the tightened `[start, end)` window to
+   write the final positions.
+4. Compute `start`, `end`, and `score` from those final positions using the
+   existing scoring rules.
 
-Use a priority queue whose root is the **worst retained match**. Once the queue
-contains `limit` items, a new match replaces the root only when the new match
-ranks better. Finally, copy and sort only the retained matches into normal best-
-first output order.
+The backward scan chooses the window; the final forward scan chooses the
+positions within it. For query `abc` in `a-abXbYc`, the final positions must be
+`[2, 3, 7]`: choose the first `b` within the tightened window.
+
+Keep the first completion even if a later occurrence is shorter or scores more
+highly. For example, `ab` in `aXXb ab` still uses `[0, 3]`. Finding the globally
+best-scoring alignment is a separate problem.
+
+### Examples
+
+Indexes refer to the original candidate, and `end` is exclusive.
+
+| Query | Candidate | Final positions | Bounds | Score |
+| --- | --- | --- | --- | --- |
+| `ab` | `a---ab` | `[4, 5]` | `[4, 6)` | 44 |
+| `abc` | `a-abXbYc` | `[2, 3, 7]` | `[2, 8)` | 55 |
+| `ab` | `aXXb ab` | `[0, 3]` | `[0, 4)` | 36 |
+
+These scores use your existing matcher. For example, `[4, 5]` in `a---ab`
+earns 32 for the two matched bytes, 8 for the boundary before `a`, and 4 for the
+consecutive `b`: 44 in total.
+
+Tightening does not guarantee a higher score for every possible input under the
+existing bonuses. Always score the final alignment according to the same rules.
 
 ### Requirements
 
-- `filterCandidatesLimit` must return at most `limit` matches in the exact same
-  order as the first `limit` results from `filterCandidates`.
-- Preserve score-descending, length-ascending, and input-index-ascending ranking.
-- Retain at most `limit` matches while scanning. Memory for match records must
-  be `O(limit)`, not `O(number of matches)`.
-- Match every candidate so later high-scoring candidates can displace earlier
-  results.
-- Reuse one positions allocation, preserve candidate borrowing, and return a
-  caller-owned result slice.
-- A zero limit returns an owned empty slice and need not run the matcher.
-- Limits larger than the number of matches return all matches.
-- Parse either `<query>` or `--limit <count> <query>`.
-- Parse `count` as a base-10 `usize`; zero is valid.
-- Return `error.InvalidLimit` for non-numeric or overflowing counts, and
-  `error.InvalidArguments` for every other argument shape.
-- Do not change unlimited CLI behavior when `--limit` is absent.
+- Keep the public `findMatch` signature, `Match`, and `MatchError` unchanged.
+- Follow the forward/backward/forward selection rules above.
+- Preserve ASCII case-insensitive comparison in every scan. Matching remains
+  byte-based outside ASCII.
+- Write strictly increasing original candidate indexes into
+  `positions[0..query.len]`. Repeated query bytes require distinct positions.
+- Leave any extra entries in the caller's positions buffer untouched.
+- Derive the returned bounds and score from the final positions.
+- Preserve the empty-query result `{ .start = 0, .end = 0, .score = 0 }` and
+  return `null` for non-matches.
+- Preserve `error.PositionBufferTooSmall` when `positions.len < query.len`.
+- Use no allocations. Reuse the caller's positions buffer and use `O(1)` extra
+  storage with `O(candidate.len + query.len)` running time.
+- Keep `isSubsequence` unchanged. Term matching, unlimited filtering, bounded
+  filtering, and the CLI should inherit refinement through their existing calls.
 
-Run the tests:
+### Tests
 
-```powershell
+The previous test requiring `[0, 5]` for `ab` in `a---ab` now requires `[4, 5]`.
+That expectation changes because alignment refinement is the new requirement.
+Additional tests cover window selection, final positions, scoring, case folding,
+repeated bytes, buffer reuse, and integration with term matching and ranking.
+
+The existing implementation is your starting point. The new refinement
+expectations will fail until you implement this challenge.
+
+Run the tests on Windows or Linux:
+
+```sh
 zig build test
 ```
 
 ## Concepts
 
-- A top-k algorithm keeps only the best `k` values seen so far.
-- A worst-first heap exposes the current cutoff in `O(1)`. Insertion and
-  replacement cost `O(log k)`, making the scan `O(n log k)`.
-- `std.PriorityQueue` comparators return `std.math.Order`, unlike sort
-  comparators, which return `bool`.
-- Heap storage is not sorted output. Sort the final retained slice with the
-  existing best-first comparator.
-- `std.fmt.parseInt(usize, text, 10)` distinguishes valid decimal values from
-  invalid and overflowing input through errors.
+- Multiple linear scans still have linear overall running time.
+- Window selection and position selection can be separate steps.
+- `usize` is unsigned. A reverse loop must stop before subtracting below zero.
+- An exclusive cursor can start one past the last byte and decrement before
+  accessing an element, provided it is greater than zero.
+- Select positions first, then use the existing scoring code on those positions.
 
 ## Hint Ladder
 
 Stop after the first hint that gets you moving.
 
-1. Return `allocator.alloc(RankedMatch, 0)` immediately when `limit == 0`.
-2. Allocate `query.len` positions once, as in `filterCandidates`.
-3. Create a private `std.PriorityQueue(RankedMatch, void, compareWorstFirst)`.
-   Its comparator must reverse the existing best-first ranking so `peek()` is
-   the worst retained item.
-4. For each match: push while `queue.count() < limit`. Once full, compare the
-   new item with `queue.peek().?`; if the new item is better, pop then push it.
-5. After scanning, duplicate `queue.items` into an owned result slice, sort it
-   with `lessThan`, and return it. Defer queue cleanup independently.
-6. In `parseArgs`, accept lengths 1 and 3 only. For length 3, require the first
-   argument to equal `--limit` before parsing the second with `parseInt`.
-7. Map every `parseInt` error to `error.InvalidLimit`; return the third argument
-   as the query. `main.zig` already maps either parse error to usage exit code 2.
+1. Your existing forward scan already supplies the first completion's exclusive
+   end: one past its last recorded position.
+2. Work backwards from that end with a candidate cursor and a count of query
+   bytes still to match. Reuse the existing case-insensitive comparison helper.
+3. Each backward match consumes one query byte and one candidate position.
+   When the first query byte is matched, you have the tightened start.
+4. Reset query progress and scan forward within the tightened window, writing
+   the final positions greedily using original candidate indexes.
+5. Run the existing scoring and bounds code after the final forward scan.
 
-When all tests pass, share your implementation for review. Challenge 8 will
-improve match quality by finding a tighter alignment instead of accepting only
-the first greedy subsequence.
+When all tests pass, share your implementation for review.

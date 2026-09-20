@@ -30,7 +30,7 @@ pub fn filterCandidates(
         }
     }
 
-    std.mem.sort(RankedMatch, matches.items, {}, lessThan);
+    std.mem.sort(RankedMatch, matches.items, {}, greaterThan);
 
     return try matches.toOwnedSlice(allocator);
 }
@@ -45,10 +45,8 @@ pub fn filterCandidatesLimit(
     if (limit == 0) return allocator.alloc(RankedMatch, 0);
 
     var matches: std.PriorityQueue(RankedMatch, void, compareWorstFirst) = .empty;
-    defer {
-        matches.clearAndFree(allocator);
-        matches.deinit(allocator);
-    }
+    defer matches.deinit(allocator);
+
     const positions = try allocator.alloc(usize, query.len);
     defer allocator.free(positions);
 
@@ -60,22 +58,20 @@ pub fn filterCandidatesLimit(
 
             if (matches.count() < limit) {
                 try matches.push(allocator, new_match);
-            } else {
-                if (lessThan(matches.peek().?, new_match)) {
-                    _ = matches.pop();
-                    try matches.push(allocator, new_match);
-                }
+            } else if (greaterThan({}, new_match, matches.peek().?)) {
+                _ = matches.pop();
+                try matches.push(allocator, new_match);
             }
         }
     }
 
     const output_slice = try allocator.dupe(RankedMatch, matches.items);
-    std.mem.sort(RankedMatch, output_slice, {}, lessThan);
+    std.mem.sort(RankedMatch, output_slice, {}, greaterThan);
 
     return output_slice;
 }
 
-fn lessThan(_: void, lhs: RankedMatch, rhs: RankedMatch) bool {
+fn greaterThan(_: void, lhs: RankedMatch, rhs: RankedMatch) bool {
     if (lhs.match.score == rhs.match.score) {
         if (lhs.candidate.len == rhs.candidate.len) {
             return lhs.input_index < rhs.input_index;
@@ -90,13 +86,27 @@ fn lessThan(_: void, lhs: RankedMatch, rhs: RankedMatch) bool {
 fn compareWorstFirst(_: void, lhs: RankedMatch, rhs: RankedMatch) std.math.Order {
     if (lhs.match.score == rhs.match.score) {
         if (lhs.candidate.len == rhs.candidate.len) {
-            return if (lhs.input_index < rhs.input_index) std.math.Order.lt else std.math.Order.gt;
+            if (lhs.input_index == rhs.input_index) {
+                return std.math.Order.eq;
+            }
+
+            return if (lhs.input_index < rhs.input_index) std.math.Order.gt else std.math.Order.lt;
         }
 
-        return if (lhs.candidate.len < rhs.candidate.len) std.math.Order.lt else std.math.Order.gt;
+        return if (lhs.candidate.len < rhs.candidate.len) std.math.Order.gt else std.math.Order.lt;
     }
 
-    return if (lhs.match.score > rhs.match.score) std.math.Order.lt else std.math.Order.gt;
+    return if (lhs.match.score > rhs.match.score) std.math.Order.gt else std.math.Order.lt;
+}
+
+test "worst-first comparator returns equal for a match compared with itself" {
+    const item = RankedMatch{
+        .candidate = "abc",
+        .input_index = 0,
+        .match = .{ .start = 0, .end = 3, .score = 64 },
+    };
+
+    try std.testing.expectEqual(std.math.Order.eq, compareWorstFirst({}, item, item));
 }
 
 test "filter excludes non-matches and keeps match metadata" {
@@ -219,7 +229,31 @@ test "limited filtering returns only the best matches" {
 
     try std.testing.expectEqual(@as(usize, 2), results.len);
     try std.testing.expectEqualStrings("abc", results[0].candidate);
-    try std.testing.expectEqualStrings("aXbYc", results[1].candidate);
+    // Hyphen boundary bonuses outweigh the longer gaps compared with "aXbYc".
+    try std.testing.expectEqualStrings("a---b---c", results[1].candidate);
+}
+
+test "refined scores drive unlimited and limited ranking" {
+    const allocator = std.testing.allocator;
+    const candidates = [_][]const u8{ "aXb", "a---ab" };
+
+    const results = try filterCandidates(allocator, "ab", &candidates);
+    defer allocator.free(results);
+    const limited = try filterCandidatesLimit(allocator, "ab", &candidates, 1);
+    defer allocator.free(limited);
+
+    try std.testing.expectEqual(@as(usize, 2), results.len);
+    try std.testing.expectEqualStrings("a---ab", results[0].candidate);
+    try std.testing.expectEqualStrings("aXb", results[1].candidate);
+    try std.testing.expectEqual(@as(usize, 4), results[0].match.start);
+    try std.testing.expectEqual(@as(usize, 6), results[0].match.end);
+    try std.testing.expectEqual(@as(i32, 44), results[0].match.score);
+    try std.testing.expectEqual(@as(i32, 37), results[1].match.score);
+
+    try std.testing.expectEqual(@as(usize, 1), limited.len);
+    try std.testing.expectEqualStrings("a---ab", limited[0].candidate);
+    try std.testing.expectEqual(results[0].input_index, limited[0].input_index);
+    try std.testing.expectEqual(results[0].match, limited[0].match);
 }
 
 test "limited filtering preserves ranking tie breakers" {
